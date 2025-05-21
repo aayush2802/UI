@@ -1,24 +1,30 @@
-# Use the latest Dart SDK (Change this if a newer version is available)
-FROM dart:3.5.4 AS build
+# Use the official Flutter Docker image with the correct version
+FROM ghcr.io/cirruslabs/flutter:3.16.3
+
+# Avoid running as root; create a user for the container
+RUN useradd -m flutteruser
+USER flutteruser
 
 # Set working directory
 WORKDIR /app
 
-# Copy the pubspec files first to optimize caching
-COPY pubspec.yaml /app/
-COPY pubspec.lock /app/
+# Copy only the pubspec files to optimize caching
+COPY pubspec.yaml pubspec.lock /app/
 
-# Get dependencies
-RUN dart pub get
+# Fix "dubious ownership" issue by configuring git for the flutter directory
+RUN git config --global --add safe.directory /sdks/flutter
 
-# Copy the rest of the application
+# Install Flutter dependencies (use `flutter pub get` instead of `dart pub get`)
+RUN flutter pub get
+
+# Copy the rest of the application code
 COPY . /app
 
-# Build the app (Modify this if using Flutter Web)
-RUN dart compile exe bin/main.dart -o app
+# Ensure Flutter is properly configured
+RUN flutter doctor -v
 
-# Use a minimal runtime image
-FROM debian:buster-slim
-WORKDIR /app
-COPY --from=build /app/app .
-CMD ["./app"]
+# Build the Flutter app (adjust according to your target platform, e.g., web, android)
+RUN flutter build apk --release
+
+# Define the command to run the app (adjust if needed)
+CMD ["flutter", "run"]

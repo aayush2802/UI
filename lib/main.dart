@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
+import 'dart:math';
 
 void main() {
   runApp(const DroneApp());
@@ -28,6 +29,7 @@ class DroneApp extends StatelessWidget {
             const CropPredictionForm(), // Add this route
         '/cropHealth': (context) => const CropHealthForm(),
         '/diseaseDetection': (context) => const PlantDiseasePrediction(),
+        '/cropUsage': (context) => const CropUsageScreen(),
       },
     );
   }
@@ -95,6 +97,11 @@ class HeaderWidget extends StatelessWidget {
                 label: 'Disease Detection', // New button
                 onTap: () => Navigator.pushNamed(context, '/diseaseDetection'),
               ),
+              HeaderButton(
+                label: 'Crop Usage',
+                onTap: () => Navigator.pushNamed(
+                    context, '/cropUsage'), // <--- Navigates
+              ),
               const SizedBox(width: 16),
               const StatusWidget(),
             ],
@@ -128,59 +135,69 @@ class PlantDiseasePrediction extends StatefulWidget {
 }
 
 class _PlantDiseasePredictionState extends State<PlantDiseasePrediction> {
-  Uint8List? _imageBytes; // To store the selected image as bytes
+  Uint8List? _imageBytes;
   String prediction = '';
   String remedy = '';
 
-  int counter = 1; // Initialize the counter
-
   final ImagePicker _picker = ImagePicker();
+  final String apiUrl = "http://127.0.0.1:5000/predict"; // Backend URL
 
   // Function to pick an image from the gallery
   Future<void> _pickImage() async {
     final pickedFile = await _picker.pickImage(source: ImageSource.gallery);
     if (pickedFile != null) {
-      final bytes = await pickedFile.readAsBytes(); // Read file as bytes
+      final bytes = await pickedFile.readAsBytes();
       setState(() {
         _imageBytes = bytes;
       });
     }
   }
 
-  // Function to handle prediction when Predict button is clicked
-  void _predictDisease() {
+  // Function to send Base64 image to backend
+  Future<void> _predictDisease() async {
     if (_imageBytes == null) {
-      // Show an alert if no image is uploaded
-      showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Error'),
-          content: const Text('Please upload an image before predicting.'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('OK'),
-            ),
-          ],
-        ),
-      );
+      _showErrorDialog('Please upload an image before predicting.');
       return;
     }
 
-    setState(() {
-      // Increment the counter with each prediction
-      counter++;
-      // Update prediction and remedy based on the counter value
-      if (counter.isEven) {
-        prediction = "Disease: Potato Late Blight";
-        remedy =
-            "To manage potato late blight, plant resistant varieties, ensure proper spacing, and avoid overhead irrigation. Apply fungicides like chlorothalonil or mancozeb preventively during favorable conditions. Remove and destroy infected plants and debris to prevent disease spread.";
+    try {
+      String base64Image = base64Encode(_imageBytes!);
+
+      var response = await http.post(
+        Uri.parse(apiUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'image': base64Image}), // Send Base64 string
+      );
+
+      if (response.statusCode == 200) {
+        final responseData = json.decode(response.body);
+        setState(() {
+          prediction = responseData['prediction'] ?? 'Unknown';
+          remedy = responseData['remedy'] ?? 'No remedy found.';
+        });
       } else {
-        prediction = "Disease: Pepper Bacterial Spot";
-        remedy =
-            "To manage pepper bacterial spot, use disease-free seeds, rotate crops, and ensure proper plant spacing to reduce humidity. Apply copper-based fungicides or biological controls like Bacillus subtilis for suppression. Regularly scout for symptoms, remove infected plants, and maintain field sanitation.";
+        _showErrorDialog('Failed to predict disease. Please try again.');
       }
-    });
+    } catch (e) {
+      _showErrorDialog('Error: ${e.toString()}');
+    }
+  }
+
+  // Function to show error messages
+  void _showErrorDialog(String message) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Error'),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -210,10 +227,8 @@ class _PlantDiseasePredictionState extends State<PlantDiseasePrediction> {
                   children: [
                     const Text(
                       'Please Upload The Image',
-                      style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.bold,
-                      ),
+                      style:
+                          TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 20),
                     ElevatedButton(
@@ -262,27 +277,22 @@ class _PlantDiseasePredictionState extends State<PlantDiseasePrediction> {
                       Container(
                         padding: const EdgeInsets.all(20),
                         decoration: BoxDecoration(
-                          color: const Color(
-                              0xFFFFEBCD), // Hex for blanched almond
+                          color: const Color(0xFFFFEBCD),
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Center(
                           child: Column(
                             children: [
                               Text(
-                                prediction,
+                                'Disease: $prediction',
                                 style: const TextStyle(
-                                  color: Colors.black,
-                                  fontSize: 22,
-                                ),
+                                    color: Colors.black, fontSize: 22),
                               ),
                               const SizedBox(height: 10),
                               Text(
                                 'Remedy: $remedy',
                                 style: const TextStyle(
-                                  color: Colors.black,
-                                  fontSize: 18,
-                                ),
+                                    color: Colors.black, fontSize: 18),
                               ),
                             ],
                           ),
@@ -293,6 +303,274 @@ class _PlantDiseasePredictionState extends State<PlantDiseasePrediction> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class CropUsageScreen extends StatefulWidget {
+  const CropUsageScreen({super.key});
+
+  @override
+  State<CropUsageScreen> createState() => _CropUsageScreenState();
+}
+
+class _CropUsageScreenState extends State<CropUsageScreen> {
+  // 1. Rename controller for clarity
+  final TextEditingController _fieldIdController = TextEditingController();
+  bool _isLoading = false;
+  // 3. Store the fetched data structure (fieldId + list of usages)
+  Map<String, dynamic>? _fetchedData;
+  List<dynamic>? _usagesList; // Extracted list of usages for easier access
+  String? _errorMessage;
+
+  // Make sure this points to your running server.js backend
+  final String _baseUrl = "http://localhost:3000"; // Example for Web/iOS Sim
+
+  Future<void> _fetchFieldUsage() async {
+    // Renamed function
+    // 1. Get Field ID from input
+    final String fieldId = _fieldIdController.text.trim();
+    if (fieldId.isEmpty) {
+      setState(() {
+        // 1. Update error message
+        _errorMessage = "Please enter a Field ID.";
+        _fetchedData = null;
+        _usagesList = null;
+      });
+      return;
+    }
+    // Validate if the input is a number
+    if (int.tryParse(fieldId) == null) {
+      setState(() {
+        // 1. Update error message
+        _errorMessage = "Please enter a valid numerical Field ID.";
+        _fetchedData = null;
+        _usagesList = null;
+      });
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+      _fetchedData = null; // Clear previous data
+      _usagesList = null;
+    });
+
+    try {
+      // 2. Use the new API endpoint
+      final Uri url = Uri.parse('$_baseUrl/crop-usage/field/$fieldId');
+      print('Calling API: $url');
+      final response = await http.get(url).timeout(const Duration(seconds: 15));
+      print('Response Status Code: ${response.statusCode}');
+
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> decodedData = jsonDecode(response.body);
+        setState(() {
+          // 3. Store the whole response and extract the list
+          _fetchedData = decodedData;
+          _usagesList = decodedData['usages'] as List<dynamic>?; // Safely cast
+          _isLoading = false;
+        });
+      } else {
+        // Handle backend errors (like 500 if fieldId is invalid format server-side)
+        // Note: A valid fieldId with no usages will return 200 and an empty usages list
+        print('API Error Body: ${response.body}');
+        setState(() {
+          _errorMessage =
+              'Error fetching data (Status: ${response.statusCode}). Check Field ID or server.';
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      print('Error occurred during fetch: $e');
+      if (!mounted) return;
+      setState(() {
+        _errorMessage =
+            'Network error. Please check connection and server status.';
+        _isLoading = false;
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    // 1. Dispose the renamed controller
+    _fieldIdController.dispose();
+    super.dispose();
+  }
+
+  // --- Timestamp Formatter (no changes needed) ---
+  String _formatTimestamp(String? timestampString) {
+    if (timestampString == null) return 'N/A';
+    try {
+      final int seconds = int.parse(timestampString);
+      final DateTime dateTime =
+          DateTime.fromMillisecondsSinceEpoch(seconds * 1000);
+      return dateTime.toLocal().toString().split('.')[0];
+    } catch (e) {
+      print("Error parsing timestamp: $e");
+      return timestampString;
+    }
+  }
+
+  // --- Helper for individual data rows (no changes needed) ---
+  Widget _buildDataRow(String label, dynamic value) {
+    String displayValue = value?.toString() ?? 'N/A';
+    if (displayValue != 'N/A') {
+      if (label.toLowerCase().contains('fertilizer') ||
+          label.toLowerCase().contains('pesticide')) {
+        displayValue += ' kg';
+      }
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4.0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(fontWeight: FontWeight.w500)),
+          const SizedBox(width: 8),
+          Expanded(child: Text(displayValue, textAlign: TextAlign.end)),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        // 1. Update title slightly
+        title: const Text('View Field Crop Usage'),
+        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            // 1. Update TextField
+            TextField(
+              controller: _fieldIdController, // Use renamed controller
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Enter Field ID', // Update label
+                hintText: 'e.g., 1', // Update hint
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 20),
+            // Update Button action
+            ElevatedButton.icon(
+              icon: _isLoading
+                  ? const SizedBox(
+                      height: 18,
+                      width: 18,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Icon(Icons.search),
+              label: Text(_isLoading
+                  ? 'Fetching...'
+                  : 'Get Field Usage Data'), // Update label
+              onPressed:
+                  _isLoading ? null : _fetchFieldUsage, // Call updated function
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+            ),
+            const SizedBox(height: 20), // Reduced space slightly
+
+            // --- Display Area ---
+            if (_errorMessage != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 16.0),
+                child: Text(
+                  _errorMessage!,
+                  style: TextStyle(
+                      color: Colors.red[700], fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+
+            // 4. Update Display Logic
+            if (_fetchedData != null && _errorMessage == null)
+              Padding(
+                padding: const EdgeInsets.only(top: 16.0, bottom: 8.0),
+                child: Text(
+                  "Usage Data for Field ID: ${_fetchedData!['fieldId'] ?? 'N/A'}",
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleLarge, // Larger title for the field
+                  textAlign: TextAlign.center,
+                ),
+              ),
+
+            // Show list of usages or 'not found' message
+            Expanded(
+              // Make the list scrollable if it exceeds screen height
+              child: _isLoading
+                  ? const Center(
+                      child:
+                          CircularProgressIndicator()) // Show loader while list is building
+                  : _usagesList == null
+                      ? const SizedBox
+                          .shrink() // Nothing to show yet (initial state or error handled above)
+                      : _usagesList!.isEmpty
+                          ? const Center(
+                              // Message if list is empty
+                              child: Text(
+                              'No usage records found for this field.',
+                              style: TextStyle(
+                                  fontSize: 16, fontStyle: FontStyle.italic),
+                            ))
+                          : ListView.builder(
+                              // Build the list of cards
+                              itemCount: _usagesList!.length,
+                              itemBuilder: (context, index) {
+                                final usage = _usagesList![index]
+                                    as Map<String, dynamic>; // Cast item
+                                return Card(
+                                  margin: const EdgeInsets.only(
+                                      bottom: 12.0), // Add space between cards
+                                  elevation: 2,
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(12.0),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        // Display Crop Batch ID prominently inside the card
+                                        Text(
+                                          'Crop Batch ID: ${usage['cropBatchId'] ?? 'N/A'}',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .titleMedium
+                                              ?.copyWith(
+                                                  fontWeight: FontWeight.bold),
+                                        ),
+                                        const Divider(height: 15),
+                                        // Use the helper for the details
+                                        _buildDataRow('Fertilizer Amount:',
+                                            usage['fertilizerAmount']),
+                                        _buildDataRow('Pesticide Amount:',
+                                            usage['pesticideAmount']),
+                                        _buildDataRow(
+                                            'Timestamp:',
+                                            _formatTimestamp(
+                                                usage['timestamp'])),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+            ),
+          ],
         ),
       ),
     );
@@ -329,7 +607,7 @@ class _CropPredictionFormState extends State<CropPredictionForm> {
       try {
         final response = await http.post(
           Uri.parse(
-              'http://127.0.0.1:5000/predict'), // Replace with your backend URL
+              'https://newbackend-sq6b.onrender.com/predict'), // Replace with your backend URL
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode(formData),
         );
@@ -481,7 +759,8 @@ class _CropHealthState extends State<CropHealthForm> {
   final _formKey = GlobalKey<FormState>();
   final TextEditingController chlorophyllController = TextEditingController();
   final TextEditingController soilMoistureController = TextEditingController();
-  final TextEditingController temperatureController = TextEditingController();
+  final TextEditingController absorptionRatioController =
+      TextEditingController();
 
   List<String> recommendations = []; // List to hold multiple recommendations
   String? selectedCrop;
@@ -520,7 +799,7 @@ class _CropHealthState extends State<CropHealthForm> {
                 buildFloatField('Water stress level',
                     'Enter value (e.g., 25.3)', soilMoistureController),
                 buildFloatField('Absorption ratio', 'Enter value (e.g., 30.5)',
-                    temperatureController),
+                    absorptionRatioController),
                 const SizedBox(height: 24.0),
                 Center(
                   child: ElevatedButton(
@@ -530,7 +809,7 @@ class _CropHealthState extends State<CropHealthForm> {
                         final chlorophyllValue =
                             double.parse(chlorophyllController.text);
                         final absorptionRatioValue =
-                            double.parse(temperatureController.text);
+                            double.parse(absorptionRatioController.text);
                         final cropWaterStressLevelValue =
                             double.parse(soilMoistureController.text);
 
@@ -657,82 +936,23 @@ class _CropHealthState extends State<CropHealthForm> {
       double absorptionRatio, double cropWaterStressLevel) async {
     List<String> recommendations = [];
 
-    // Logic for Rice (Paddy)
-    if (selectedCrop == 'Paddy') {
-      // Chlorophyll decision
-      recommendations.add('Chlorophyll Level:');
-      if (chlorophyll < 25) {
-        recommendations.add(
-            'Apply nitrogen-rich fertilizers like urea or ammonium sulfate to boost chlorophyll levels.');
-      } else if (chlorophyll > 45) {
-        recommendations.add(
-            'Reduce nitrogen application and increase potassium-based fertilizers to balance nutrient uptake.');
-      } else {
-        recommendations.add('Chlorophyll level is within the optimal range.');
-      }
+    final response = await http.post(
+      Uri.parse(
+          'https://health-backend-zvel.onrender.com/predict_health'), // Replace with your backend URL
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'Chlorophyll': chlorophyll,
+        'Soil Moisture': cropWaterStressLevel,
+        'Absorption Ratio': absorptionRatio,
+        'Crop': selectedCrop,
+      }),
+    );
 
-      // Absorption Ratio decision
-      recommendations.add('Absorption Ratio:');
-      if (absorptionRatio < 0.45) {
-        recommendations.add(
-            'Ensure sufficient irrigation and apply organic matter to improve soil moisture retention.');
-      } else if (absorptionRatio > 0.55) {
-        recommendations.add(
-            'Reduce waterlogging by improving drainage and avoid over-irrigation.');
-      } else {
-        recommendations.add('Absorption ratio is within the optimal range.');
-      }
-
-      // Crop Water Stress Level decision
-      recommendations.add('Water Stress Level:');
-      if (cropWaterStressLevel < 0.5) {
-        recommendations.add(
-            'Increase irrigation frequency to ensure adequate water supply.');
-      } else if (cropWaterStressLevel > 0.5) {
-        recommendations.add(
-            'Implement water-saving techniques like mulching or use drought-tolerant varieties to reduce stress.');
-      } else {
-        recommendations.add('Crop water stress is within the optimal range.');
-      }
-    }
-
-    // Logic for Soybean
-    if (selectedCrop == 'Soybean') {
-      // Chlorophyll decision
-      recommendations.add('Chlorophyll Level:');
-      if (chlorophyll < 46) {
-        recommendations.add(
-            'Apply nitrogen-rich fertilizers like urea to enhance chlorophyll production.');
-      } else if (chlorophyll > 55) {
-        recommendations.add(
-            'Reduce nitrogen application and focus on balanced fertilization with more potassium.');
-      } else {
-        recommendations.add('Chlorophyll level is within the optimal range.');
-      }
-
-      // Absorption Ratio decision
-      recommendations.add('Absorption Ratio:');
-      if (absorptionRatio < 0.75) {
-        recommendations.add(
-            'Ensure proper irrigation and apply organic matter to enhance soil water retention.');
-      } else if (absorptionRatio > 0.85) {
-        recommendations.add(
-            'Avoid over-irrigation and improve drainage to prevent waterlogging.');
-      } else {
-        recommendations.add('Absorption ratio is within the optimal range.');
-      }
-
-      // Crop Water Stress Level decision
-      recommendations.add('Water Stress Level:');
-      if (cropWaterStressLevel < 0.25) {
-        recommendations.add(
-            'Reduce irrigation intervals and monitor for waterlogging to avoid root damage.');
-      } else if (cropWaterStressLevel > 0.40) {
-        recommendations.add(
-            'Increase irrigation and consider using drought-resistant soybean varieties.');
-      } else {
-        recommendations.add('Crop water stress is within the optimal range.');
-      }
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      recommendations = List<String>.from(data['recommendations']);
+    } else {
+      throw Exception('Failed to load recommendations');
     }
 
     return recommendations;
@@ -1195,127 +1415,210 @@ class InfoCard extends StatelessWidget {
 }
 
 class MapScreen extends StatefulWidget {
-  const MapScreen({super.key});
+  const MapScreen({Key? key}) : super(key: key);
 
   @override
-  _MapScreenState createState() => _MapScreenState();
+  State<MapScreen> createState() => _MapScreenState();
 }
 
 class _MapScreenState extends State<MapScreen> {
-  final List<Marker> _markers = [];
-  LatLng? _selectedPosition;
+  final List<LatLng> _polygonPoints = [];
+  final List<LatLng> _rasterScanPoints = [];
+  bool _showOptimalPath = false;
+  bool _editMode = true;
 
-  // API URL to store coordinates in MongoDB
-  final String apiUrl = 'http://localhost:3000/addMarker';
-
-  // Function to add a marker to the map and send it to the backend
-  void _addMarker(LatLng position) {
-    setState(() {
-      _selectedPosition = position;
-      _markers.add(
-        Marker(
-          point: position,
-          width: 100,
-          height: 80,
-          builder: (ctx) => GestureDetector(
-            onLongPress: () => _removeMarker(position),
-            child: Column(
-              children: [
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(4),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.grey.withOpacity(0.5),
-                        spreadRadius: 2,
-                        blurRadius: 5,
-                        offset: const Offset(0, 3),
-                      ),
-                    ],
-                  ),
-                  child: Text(
-                    "${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}",
-                    style: const TextStyle(fontSize: 14, color: Colors.black),
-                  ),
-                ),
-                const Icon(
-                  Icons.location_on,
-                  color: Colors.red,
-                  size: 50,
-                ),
-              ],
-            ),
-          ),
-        ),
+  void _toggleOptimalPath() {
+    if (_polygonPoints.length < 4) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Need at least 4 points to calculate path')),
       );
-    });
-    print("Marker added at: ${position.latitude}, ${position.longitude}");
-
-    // Send coordinates to MongoDB
-    _sendCoordinatesToMongoDB(position);
-  }
-
-  // Function to remove a marker
-  void _removeMarker(LatLng position) {
-    setState(() {
-      _markers.removeWhere((marker) => marker.point == position);
-    });
-    print("Marker removed at: ${position.latitude}, ${position.longitude}");
-  }
-
-  // Send coordinates to MongoDB
-  Future<void> _sendCoordinatesToMongoDB(LatLng position) async {
-    try {
-      final response = await http.post(
-        Uri.parse(apiUrl),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
-          'latitude': position.latitude,
-          'longitude': position.longitude,
-        }),
-      );
-
-      if (response.statusCode == 200) {
-        print("Marker saved to MongoDB");
-      } else {
-        print(
-            "Failed to save marker to MongoDB. Status Code: ${response.statusCode}");
-      }
-    } catch (error) {
-      print("Error occurred while saving marker: $error");
+      return;
     }
+
+    setState(() {
+      _showOptimalPath = !_showOptimalPath;
+      if (_showOptimalPath) {
+        _generateOptimalPath();
+      } else {
+        _rasterScanPoints.clear();
+      }
+    });
+  }
+
+  void _generateOptimalPath() {
+    final pathPoints = <LatLng>[];
+
+    double minLat = _polygonPoints.map((p) => p.latitude).reduce(min);
+    double maxLat = _polygonPoints.map((p) => p.latitude).reduce(max);
+    double minLng = _polygonPoints.map((p) => p.longitude).reduce(min);
+    double maxLng = _polygonPoints.map((p) => p.longitude).reduce(max);
+
+    final latRange = maxLat - minLat;
+    final double step = latRange / 20; // Adjust to ~150 horizontal scan lines
+
+    bool reverseDirection = false;
+
+    for (double lat = minLat; lat <= maxLat; lat += step) {
+      List<double> longitudes = [];
+
+      for (double lng = minLng; lng <= maxLng; lng += step) {
+        if (_isPointInPolygon(LatLng(lat, lng), _polygonPoints)) {
+          longitudes.add(lng);
+        }
+      }
+
+      if (longitudes.isEmpty) continue;
+
+      longitudes.sort(reverseDirection
+          ? (a, b) => b.compareTo(a)
+          : (a, b) => a.compareTo(b));
+      reverseDirection = !reverseDirection;
+
+      pathPoints.addAll(longitudes.map((lng) => LatLng(lat, lng)));
+    }
+
+    setState(() {
+      _rasterScanPoints
+        ..clear()
+        ..addAll(pathPoints);
+    });
+  }
+
+  bool _isPointInPolygon(LatLng point, List<LatLng> polygon) {
+    bool inside = false;
+    for (int i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      final p1 = polygon[i], p2 = polygon[j];
+      if (((p1.latitude > point.latitude) != (p2.latitude > point.latitude)) &&
+          (point.longitude <
+              (p2.longitude - p1.longitude) *
+                      (point.latitude - p1.latitude) /
+                      (p2.latitude - p1.latitude) +
+                  p1.longitude)) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  void _toggleViewMode() {
+    setState(() {
+      _editMode = !_editMode;
+      if (!_editMode) {
+        _showOptimalPath = false;
+        _rasterScanPoints.clear();
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Map View'),
-        backgroundColor: const Color(0xFF2F3B47),
+        title: const Text('Field Scanning Map'),
+        actions: [
+          IconButton(
+            icon: Icon(_editMode ? Icons.map : Icons.edit),
+            onPressed: _toggleViewMode,
+            tooltip: _editMode ? 'Back to Normal Map' : 'Edit Polygon',
+          ),
+          if (_editMode)
+            IconButton(
+              icon: Icon(Icons.alt_route,
+                  color:
+                      _polygonPoints.length >= 4 ? Colors.white : Colors.grey),
+              onPressed: _polygonPoints.length >= 4 ? _toggleOptimalPath : null,
+              tooltip: 'Optimal Path',
+            ),
+        ],
       ),
       body: FlutterMap(
         options: MapOptions(
-          center:
-              LatLng(21.2514, 81.6296), // Set Raipur, India as default center
-          zoom: 13.0,
-          onTap: (tapPosition, latlng) {
-            _addMarker(latlng);
-          },
+          center: LatLng(21.2514, 81.6296),
+          zoom: 16.0,
+          minZoom: 3.0,
+          maxZoom: 18.0,
+          onTap: _editMode
+              ? (tapPosition, latlng) =>
+                  setState(() => _polygonPoints.add(latlng))
+              : null,
         ),
         children: [
           TileLayer(
             urlTemplate:
-                "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", // Esri World Imagery
-            userAgentPackageName: 'com.example.yourappname',
+                'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            userAgentPackageName: 'com.example.yourapp',
           ),
-          MarkerLayer(
-            markers: _markers,
-          ),
+          if (_editMode && _polygonPoints.isNotEmpty)
+            PolygonLayer(
+              polygons: [
+                Polygon(
+                  points: _polygonPoints,
+                  color: Colors.blue.withOpacity(0.3),
+                  borderColor: Colors.blue,
+                  borderStrokeWidth: 2,
+                )
+              ],
+            ),
+          if (_editMode && _showOptimalPath)
+            PolylineLayer(
+              polylines: [
+                Polyline(
+                  points: _rasterScanPoints,
+                  color: Colors.green,
+                  strokeWidth: 2,
+                )
+              ],
+            ),
+          if (_editMode)
+            MarkerLayer(
+              markers: _polygonPoints.map((point) {
+                return Marker(
+                  point: point,
+                  width: 100,
+                  height: 60,
+                  builder: (ctx) => Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.6),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          '${point.latitude.toStringAsFixed(5)},\n${point.longitude.toStringAsFixed(5)}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            height: 1.2,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                      const Icon(
+                        Icons.location_pin,
+                        color: Colors.red,
+                        size: 30,
+                      ),
+                    ],
+                  ),
+                );
+              }).toList(),
+            ),
         ],
       ),
+      floatingActionButton: _editMode
+          ? FloatingActionButton(
+              onPressed: () => setState(() {
+                _polygonPoints.clear();
+                _rasterScanPoints.clear();
+                _showOptimalPath = false;
+              }),
+              child: const Icon(Icons.clear),
+            )
+          : null,
     );
   }
 }
